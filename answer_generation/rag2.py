@@ -8,6 +8,14 @@ from langchain.chains.llm import LLMChain
 from langchain.chains.combine_documents.stuff import StuffDocumentsChain
 from langsmith import Client
 from uuid import uuid4
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.document_loaders import PyPDFLoader
+from langchain.embeddings import HuggingFaceEmbeddings
+from langchain.vectorstores import Chroma
+from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
+from langchain import HuggingFacePipeline
+from langchain.chains.question_answering import load_qa_chain
+from langchain.prompts import PromptTemplate
 
 unique_id = uuid4().hex[0:8]
 os.environ["LANGCHAIN_TRACING_V2"] = "true"
@@ -55,59 +63,37 @@ def process_query(query, persist_dir=r"C:\Work\mi41\DIPLOM_99\diplom_fix\chroma_
         # result = vectordb.similarity_search(query, k=2)
 
         # debug_log("Creating retriever")
-        retriever = vectordb.as_retriever(search_type="similarity", search_kwargs={"k": 5})
+        retriever = vectordb.as_retriever(search_type="similarity", search_kwargs={"k": 4})
 
         # debug_log(f"Retrieving documents for query: {query}")
-        retrieved_docs = retriever.invoke(query)
+        # retrieved_docs = retriever.invoke(query)
         # debug_log(f"Retrieved documents: {retrieved_docs}")
 
         debug_log("Initializing LLM")
         llm = Ollama(model="qwen:4b")
 
-        prompt = """
-            You are an AI helper-assistant that guides scientists through an existing database with arxiv.org articles.
-            1. Use ONLY the following pieces of context to answer the question at the end.
-            2. If you don't know the answer, just say that "I don't know" but don't make up an answer on your own.
-            3. Keep the answer crisp and limited to 2 or 3 sentences for each article.
-            4. When mentioning articles, try to provide more information about the articles. Author(s) and the link are a bare minimum.
-            5. If you are asked to provide a certain number of articles, provide a list of that exact number of articles from the provided context.
+        # Define the custom prompt template suitable for the Phi-3 model
+        qna_prompt_template = """<|system|>
+        You have been provided with the context and a question, try to find out the answer to the question only using the context information. If the answer to the question is not found within the context, return "I dont know" as the response.<|end|>
+        <|user|>
+        Context:
+        {context}
 
-            Context: {context}
-
-            Question: {question}
-
-            Helpful Answer:"""
-
-        QA_CHAIN_PROMPT = PromptTemplate.from_template(prompt)
-
-        llm_chain = LLMChain(
-            llm=llm,
-            prompt=QA_CHAIN_PROMPT,
-            callbacks=None,
-            verbose=True)
-
-        document_prompt = PromptTemplate(
-            input_variables=["page_content", "source"],
-            template="Context:\ncontent:{page_content}\nsource:{source}",
+        Question: {query}<|end|>
+        <|assistant|>"""
+        PROMPT = PromptTemplate(
+            template=qna_prompt_template, input_variables=["context", "question"]
         )
 
-        combine_documents_chain = StuffDocumentsChain(
-            llm_chain=llm_chain,
-            document_variable_name="context",
-            document_prompt=document_prompt,
-            callbacks=None,
-        )
+        # Define the QNA chain
+        chain = load_qa_chain(llm, chain_type="stuff", prompt=PROMPT)
 
-        qa = RetrievalQA(
-            combine_documents_chain=combine_documents_chain,
-            verbose=True,
-            retriever=retriever,
-            return_source_documents=True,
-        )
+        context = retriever.get_relevant_documents(query)
+        print(context)
 
-        result = qa(query)
-
-        return result["result"]
+        answer = (chain({"input_documents": context, "query": query}, return_only_outputs=True))['output_text']
+        answer = (answer.split("<|assistant|>")[-1]).strip()
+        return answer
 
     except RuntimeError as e:
         debug_log(f"RuntimeError: {e}")
@@ -127,17 +113,6 @@ def main():
     debug_log(f"Processing new query: {query}")
     answer = process_query(query, persist_dir)
     print(answer)
-
-'''    while True:
-        query = input("\nQuery: ")
-        if query == "exit":
-            break
-        if query.strip() == "":
-            continue
-        debug_log(f"Processing new query: {query}")
-        answer = process_query(query, persist_dir)
-        print(answer)'''
-
 
 if __name__ == "__main__":
     main()
